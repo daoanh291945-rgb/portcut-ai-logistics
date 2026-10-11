@@ -1,4 +1,3 @@
-import math
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -7,11 +6,24 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 
+
+# =========================================================
+# 1. CẤU HÌNH ỨNG DỤNG
+# =========================================================
+
 st.set_page_config(
     page_title="PortCut AI | Dự báo rủi ro cut-off",
     page_icon="🚢",
     layout="wide",
 )
+
+st.title("🚢 PortCut AI — Dự báo và quản trị rủi ro trễ cut-off")
+st.caption(
+    "Công cụ thử nghiệm hỗ trợ đánh giá nguy cơ container đến cảng trễ cut-off. "
+    "Kết quả là ước tính hỗ trợ ra quyết định, không thay thế xác nhận của hãng tàu, "
+    "đại lý hoặc cảng."
+)
+
 
 PORTS = {
     "Cảng Hải Phòng": {"lat": 20.8449, "lon": 106.6881},
@@ -24,15 +36,13 @@ PORTS = {
     "Khác / tự nhập tọa độ": None,
 }
 
-st.title("🚢 PortCut AI — Dự báo và quản trị rủi ro trễ cut-off")
-st.caption(
-    "Bản thử nghiệm hỗ trợ nhân viên logistics đánh giá rủi ro chuyến hàng. "
-    "Thời tiết lấy từ Open-Meteo; tuyến đường lấy từ OSRM/OpenStreetMap. "
-    "Kết quả dự báo là ước tính, không thay thế xác nhận của cảng hoặc hãng tàu."
-)
+
+# =========================================================
+# 2. THIẾT LẬP CẢNG
+# =========================================================
 
 with st.sidebar:
-    st.header("Thiết lập chuyến hàng")
+    st.header("⚙️ Thiết lập chuyến hàng")
 
     port_name = st.selectbox(
         "Cảng đích",
@@ -40,7 +50,7 @@ with st.sidebar:
         index=4,
     )
 
-    if port_name == "Khác / tự nhập tọa độ":
+    if PORTS[port_name] is None:
         port_lat = st.number_input(
             "Vĩ độ cảng",
             min_value=-90.0,
@@ -48,6 +58,7 @@ with st.sidebar:
             value=10.5,
             format="%.5f",
         )
+
         port_lon = st.number_input(
             "Kinh độ cảng",
             min_value=-180.0,
@@ -60,14 +71,20 @@ with st.sidebar:
         port_lon = PORTS[port_name]["lon"]
 
     st.caption(
-        "Tọa độ cảng mặc định chỉ đại diện khu vực cảng, "
-        "không bảo đảm trùng vị trí cổng terminal."
+        "Tọa độ mặc định đại diện khu vực cảng, "
+        "không bảo đảm trùng cổng tiếp nhận container."
     )
 
 
+# =========================================================
+# 3. LẤY VÀ PHÂN TÍCH THỜI TIẾT
+# =========================================================
+
 def get_weather(lat, lon):
-    """Lấy thời tiết hiện tại từ Open-Meteo."""
+    """Lấy thời tiết từ Open-Meteo, không cần API key."""
+
     url = "https://api.open-meteo.com/v1/forecast"
+
     params = {
         "latitude": lat,
         "longitude": lon,
@@ -75,21 +92,24 @@ def get_weather(lat, lon):
             "temperature_2m,relative_humidity_2m,precipitation,"
             "rain,wind_speed_10m,weather_code"
         ),
-        "hourly": (
-            "precipitation_probability,precipitation,"
-            "wind_speed_10m,weather_code"
-        ),
         "forecast_days": 2,
         "timezone": "Asia/Bangkok",
     }
 
-    response = requests.get(url, params=params, timeout=15)
+    response = requests.get(
+        url,
+        params=params,
+        timeout=15,
+    )
+
     response.raise_for_status()
+
     return response.json()
 
 
 def weather_summary(weather):
     current = weather.get("current", {})
+
     code = current.get("weather_code")
 
     code_text = {
@@ -151,6 +171,10 @@ def weather_summary(weather):
     }
 
 
+# =========================================================
+# 4. PHƯƠNG ÁN XỬ LÝ RỦI RO
+# =========================================================
+
 def build_recommendations(
     buffer_hours,
     weather_score,
@@ -164,48 +188,50 @@ def build_recommendations(
         actions.extend([
             (
                 "Ưu tiên 1",
-                "Liên hệ hãng tàu/đại lý xác nhận cut-off thực tế, "
+                "Liên hệ ngay hãng tàu/đại lý để xác nhận cut-off thực tế, "
                 "khả năng gia hạn và chuyến thay thế.",
             ),
             (
                 "Ưu tiên 2",
-                "Kiểm tra khả năng điều xe thay thế hoặc tuyến khác; "
-                "chỉ thực hiện khi điều độ xác nhận khả thi.",
+                "Kiểm tra khả năng điều xe thay thế hoặc tuyến khác. "
+                "Chỉ thực hiện sau khi điều độ xác nhận tính khả thi.",
             ),
             (
                 "Ưu tiên 3",
-                "Thông báo các bên liên quan và chuẩn bị phương án "
-                "chuyển chuyến nếu không thể vào cảng đúng hạn.",
+                "Thông báo các bên liên quan và chuẩn bị phương án chuyển chuyến "
+                "nếu không thể vào cảng đúng hạn.",
             ),
         ])
+
     elif buffer_hours < 2:
         actions.extend([
             (
                 "Ưu tiên 1",
-                "Theo dõi ETA sát sao và xác minh tiến độ với tài xế/điều độ.",
+                "Theo dõi ETA sát sao, xác minh tiến độ với tài xế và điều độ.",
             ),
             (
                 "Ưu tiên 2",
-                "Kiểm tra tuyến thay thế và điều kiện đổi xe; "
-                "chỉ đổi khi lợi ích thời gian lớn hơn thời gian chuyển đổi.",
+                "Kiểm tra tuyến thay thế hoặc xe dự phòng. "
+                "Chỉ đổi phương án khi thời gian tiết kiệm đủ bù thời gian chuyển đổi.",
             ),
         ])
+
     elif buffer_hours < 5:
         actions.extend([
             (
                 "Ưu tiên 1",
-                "Đặt mốc cập nhật ETA và xác minh tình trạng giao thông "
-                "trước khi xe đến cảng.",
+                "Cập nhật ETA định kỳ và xác minh giao thông trước khi xe đến cảng.",
             ),
             (
                 "Ưu tiên 2",
                 "Chuẩn bị phương án dự phòng nếu thời gian chờ cổng tăng.",
             ),
         ])
+
     else:
         actions.append((
             "Ưu tiên 1",
-            "Duy trì kế hoạch hiện tại và cập nhật ETA khi điều kiện thay đổi.",
+            "Duy trì kế hoạch hiện tại và cập nhật ETA nếu điều kiện thay đổi.",
         ))
 
     if weather_score >= 15:
@@ -218,18 +244,19 @@ def build_recommendations(
     if traffic_level >= 3:
         actions.append((
             "Giao thông",
-            "Xác minh tình trạng ùn tắc qua tài xế hoặc nguồn giao thông thực tế. "
+            "Xác minh ùn tắc với tài xế hoặc nguồn giao thông thực tế. "
             "Mức giao thông nhập tay không phải dữ liệu trực tiếp.",
         ))
 
     if port_wait >= 2:
         actions.append((
             "Cổng cảng",
-            "Liên hệ đại lý/đơn vị khai thác để xác minh thời gian chờ "
+            "Liên hệ đại lý hoặc đơn vị khai thác để xác minh thời gian chờ "
             "và tình trạng tiếp nhận container.",
         ))
 
     cargo_text = str(cargo_type).lower()
+
     if any(word in cargo_text for word in ["reefer", "lạnh", "đông lạnh"]):
         actions.append((
             "Hàng lạnh",
@@ -237,10 +264,21 @@ def build_recommendations(
             "cấp điện dự phòng theo quy trình.",
         ))
 
+    if "kiểm dịch" in cargo_text:
+        actions.append((
+            "Kiểm dịch",
+            "Xác minh hồ sơ, thời gian kiểm tra và yêu cầu kiểm dịch "
+            "để tính đủ thời gian trước cut-off.",
+        ))
+
     return actions
 
 
-tab1, tab2, tab_gps, tab3 = st.tabs([
+# =========================================================
+# 5. TẠO CÁC TAB
+# =========================================================
+
+tab1, tab2, tab3, tab4 = st.tabs([
     "🔎 Phân tích chuyến hàng",
     "📊 Dữ liệu lịch sử",
     "📍 GPS & tuyến đường",
@@ -251,7 +289,9 @@ tab1, tab2, tab_gps, tab3 = st.tabs([
 # =========================================================
 # TAB 1: PHÂN TÍCH CHUYẾN HÀNG
 # =========================================================
+
 with tab1:
+
     left, right = st.columns([1.15, 0.85])
 
     with left:
@@ -263,10 +303,12 @@ with tab1:
             "Thời gian xe dự kiến rời kho",
             value=now + timedelta(hours=1),
         )
+
         cutoff = st.datetime_input(
             "Thời hạn cut-off",
             value=now + timedelta(hours=8),
         )
+
         travel_hours = st.number_input(
             "Thời gian chạy dự kiến (giờ)",
             min_value=0.1,
@@ -274,6 +316,7 @@ with tab1:
             value=4.0,
             step=0.25,
         )
+
         buffer_extra = st.number_input(
             "Dự phòng kiểm tra/phát sinh khác (giờ)",
             min_value=0.0,
@@ -281,17 +324,21 @@ with tab1:
             value=1.0,
             step=0.25,
         )
-        traffic = st.select_slider(
-            "Mức độ giao thông (nhập theo thông tin hiện có)",
-            options=[
-                ("1 - Thông thoáng", 1),
-                ("2 - Bình thường", 2),
-                ("3 - Đông", 3),
-                ("4 - Tắc nghiêm trọng", 4),
+
+        # SỬA LỖI: selectbox trả về chuỗi, không dùng tuple.
+        traffic_label = st.selectbox(
+            "Mức độ giao thông (theo thông tin hiện có)",
+            [
+                "1 - Thông thoáng",
+                "2 - Bình thường",
+                "3 - Đông",
+                "4 - Tắc nghiêm trọng",
             ],
-            value=("2 - Bình thường", 2),
-            format_func=lambda x: x[0],
+            index=1,
         )
+
+        traffic_value = int(traffic_label[0])
+
         port_wait = st.number_input(
             "Thời gian chờ cổng dự kiến (giờ)",
             min_value=0.0,
@@ -299,6 +346,7 @@ with tab1:
             value=1.0,
             step=0.25,
         )
+
         cargo = st.selectbox(
             "Loại hàng",
             [
@@ -317,201 +365,265 @@ with tab1:
 
     with right:
         st.subheader("Thời tiết tại khu vực cảng")
+
         st.caption(
-            "Dữ liệu thời tiết trực tuyến tại khu vực cảng, "
+            "Dữ liệu trực tuyến tại tọa độ cảng, "
             "không đại diện toàn bộ tuyến đường."
         )
 
         if st.button("Lấy thời tiết mới nhất", use_container_width=True):
             try:
-                st.session_state["weather_data"] = get_weather(port_lat, port_lon)
+                st.session_state["weather_data"] = get_weather(
+                    port_lat,
+                    port_lon,
+                )
                 st.session_state["weather_error"] = None
-            except Exception as e:
-                st.session_state["weather_error"] = str(e)
+            except Exception:
+                st.session_state["weather_error"] = (
+                    "Không kết nối được dịch vụ thời tiết."
+                )
 
         if "weather_data" not in st.session_state:
             try:
-                st.session_state["weather_data"] = get_weather(port_lat, port_lon)
+                st.session_state["weather_data"] = get_weather(
+                    port_lat,
+                    port_lon,
+                )
                 st.session_state["weather_error"] = None
-            except Exception as e:
-                st.session_state["weather_error"] = str(e)
+            except Exception:
+                st.session_state["weather_error"] = (
+                    "Không kết nối được dịch vụ thời tiết."
+                )
 
         if st.session_state.get("weather_data"):
-            try:
-                ws = weather_summary(st.session_state["weather_data"])
+            ws = weather_summary(st.session_state["weather_data"])
 
-                a, b = st.columns(2)
-                a.metric("Hiện trạng", ws["description"])
-                b.metric(
-                    "Nhiệt độ",
-                    f"{ws['temperature']} °C"
-                    if ws["temperature"] is not None else "N/A",
+            a, b = st.columns(2)
+
+            a.metric("Hiện trạng", ws["description"])
+
+            b.metric(
+                "Nhiệt độ",
+                f"{ws['temperature']} °C"
+                if ws["temperature"] is not None
+                else "N/A",
+            )
+
+            a.metric("Mưa hiện tại", f"{ws['rain']:.1f} mm")
+            b.metric("Tốc độ gió", f"{ws['wind']:.0f} km/h")
+
+            if ws["humidity"] is not None:
+                st.caption(f"Độ ẩm: {ws['humidity']}%")
+
+            if ws["reasons"]:
+                st.warning(
+                    "Tín hiệu thời tiết cần lưu ý: "
+                    + "; ".join(ws["reasons"])
                 )
-                a.metric("Mưa hiện tại", f"{ws['rain']:.1f} mm")
-                b.metric("Tốc độ gió", f"{ws['wind']:.0f} km/h")
+            else:
+                st.success(
+                    "Chưa phát hiện tín hiệu thời tiết rủi ro cao "
+                    "theo ngưỡng thử nghiệm."
+                )
 
-                if ws["humidity"] is not None:
-                    st.caption(f"Độ ẩm: {ws['humidity']}%")
+        else:
+            ws = {"score": 0, "reasons": []}
 
-                if ws["reasons"]:
-                    st.warning(
-                        "Tín hiệu thời tiết cần lưu ý: "
-                        + "; ".join(ws["reasons"])
-                    )
+            st.info(
+                st.session_state.get(
+                    "weather_error",
+                    "Chưa có dữ liệu thời tiết.",
+                )
+            )
+
+    if analyze:
+
+        # Không phân tích khi cut-off sớm hơn thời gian rời kho.
+        if cutoff <= departure:
+            st.error(
+                "Thời hạn cut-off phải sau thời gian xe dự kiến rời kho. "
+                "Hãy kiểm tra lại hai mốc thời gian."
+            )
+
+        else:
+            ws = (
+                weather_summary(st.session_state["weather_data"])
+                if st.session_state.get("weather_data")
+                else {"score": 0, "reasons": []}
+            )
+
+            eta = departure + timedelta(
+                hours=(
+                    float(travel_hours)
+                    + float(buffer_extra)
+                    + float(port_wait)
+                )
+            )
+
+            buffer_hours = (cutoff - eta).total_seconds() / 3600
+
+            score = 0
+            drivers = []
+
+            if buffer_hours < 0:
+                score += 60
+                drivers.append("ETA dự kiến sau cut-off")
+
+            elif buffer_hours < 1:
+                score += 45
+                drivers.append("Thời gian dự phòng dưới 1 giờ")
+
+            elif buffer_hours < 2:
+                score += 30
+                drivers.append("Thời gian dự phòng dưới 2 giờ")
+
+            elif buffer_hours < 4:
+                score += 15
+                drivers.append("Thời gian dự phòng còn hạn chế")
+
+            traffic_points = {
+                1: 0,
+                2: 5,
+                3: 15,
+                4: 25,
+            }
+
+            score += traffic_points[traffic_value]
+
+            if traffic_value >= 3:
+                drivers.append(
+                    f"Giao thông được nhập ở mức: {traffic_label}"
+                )
+
+            score += int(ws["score"])
+
+            if ws["reasons"]:
+                drivers.extend(ws["reasons"])
+
+            if port_wait >= 2:
+                score += 10
+                drivers.append(
+                    f"Thời gian chờ cổng dự kiến {port_wait:.1f} giờ"
+                )
+
+            score = min(100, score)
+
+            level = (
+                "Cao"
+                if score >= 60
+                else "Trung bình"
+                if score >= 30
+                else "Thấp"
+            )
+
+            st.markdown("---")
+            st.subheader("Kết quả dự báo")
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                "ETA ước tính",
+                eta.strftime("%d/%m/%Y %H:%M"),
+            )
+
+            c2.metric(
+                "Thời gian còn trước cut-off",
+                f"{buffer_hours:.1f} giờ",
+            )
+
+            c3.metric(
+                "Điểm rủi ro thử nghiệm",
+                f"{score}/100",
+            )
+
+            c4.metric("Mức rủi ro", level)
+
+            if buffer_hours < 0:
+                st.error(
+                    "Theo dữ liệu đầu vào, chuyến có nguy cơ đến sau cut-off. "
+                    "Cần xác minh ngay với điều độ và hãng tàu/đại lý."
+                )
+
+            elif score >= 60:
+                st.error(
+                    "Rủi ro cao theo bộ quy tắc thử nghiệm. "
+                    "Cần xác minh dữ liệu trước khi quyết định."
+                )
+
+            elif score >= 30:
+                st.warning(
+                    "Có yếu tố rủi ro. Cần theo dõi ETA và chuẩn bị "
+                    "phương án dự phòng."
+                )
+
+            else:
+                st.success(
+                    "Rủi ro thấp theo thông tin hiện có. "
+                    "Tiếp tục theo dõi khi điều kiện thay đổi."
+                )
+
+            with st.expander(
+                "Vì sao hệ thống đánh giá như vậy?",
+                expanded=True,
+            ):
+                if drivers:
+                    for driver in drivers:
+                        st.write("• " + driver)
                 else:
-                    st.success(
-                        "Chưa phát hiện tín hiệu thời tiết rủi ro cao "
+                    st.write(
+                        "Chưa phát hiện yếu tố rủi ro nổi bật "
                         "theo ngưỡng thử nghiệm."
                     )
 
-            except Exception:
-                ws = {"score": 0, "reasons": []}
-                st.info("Dữ liệu thời tiết chưa đủ để hiển thị.")
-        else:
-            ws = {"score": 0, "reasons": []}
-            if st.session_state.get("weather_error"):
-                st.warning(
-                    "Chưa lấy được thời tiết. Kiểm tra kết nối mạng "
-                    "hoặc thử lại."
-                )
-            else:
-                st.info("Chưa có dữ liệu thời tiết.")
+            st.subheader("Phương án đề xuất")
 
-    if analyze:
-        ws = (
-            weather_summary(st.session_state["weather_data"])
-            if st.session_state.get("weather_data")
-            else {"score": 0, "reasons": []}
-        )
-
-        eta = departure + timedelta(
-            hours=float(travel_hours)
-            + float(buffer_extra)
-            + float(port_wait)
-        )
-
-        buffer_hours = (cutoff - eta).total_seconds() / 3600
-
-        score = 0
-        drivers = []
-
-        if buffer_hours < 0:
-            score += 60
-            drivers.append("ETA dự kiến sau cut-off")
-        elif buffer_hours < 1:
-            score += 45
-            drivers.append("Dự phòng trước cut-off dưới 1 giờ")
-        elif buffer_hours < 2:
-            score += 30
-            drivers.append("Dự phòng trước cut-off dưới 2 giờ")
-        elif buffer_hours < 4:
-            score += 15
-            drivers.append("Dự phòng thời gian còn hạn chế")
-
-        traffic_value = traffic[1]
-        score += {1: 0, 2: 5, 3: 15, 4: 25}[traffic_value]
-
-        if traffic_value >= 3:
-            drivers.append("Giao thông được nhập ở mức đông/tắc")
-
-        score += int(ws["score"])
-
-        if ws["reasons"]:
-            drivers.extend(ws["reasons"])
-
-        if port_wait >= 2:
-            score += 10
-            drivers.append(
-                f"Thời gian chờ cổng dự kiến {port_wait:.1f} giờ"
+            recommendations = build_recommendations(
+                buffer_hours,
+                ws["score"],
+                traffic_value,
+                port_wait,
+                cargo,
             )
 
-        score = min(100, score)
+            for priority, action in recommendations:
+                st.write(f"**{priority}:** {action}")
 
-        level = (
-            "Cao" if score >= 60
-            else "Trung bình" if score >= 30
-            else "Thấp"
-        )
+            result = pd.DataFrame([{
+                "thoi_gian_phan_tich": datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "cang_dich": port_name,
+                "departure": departure.strftime("%Y-%m-%d %H:%M"),
+                "cutoff": cutoff.strftime("%Y-%m-%d %H:%M"),
+                "eta_uoc_tinh": eta.strftime("%Y-%m-%d %H:%M"),
+                "buffer_hours": round(buffer_hours, 2),
+                "risk_score_prototype": score,
+                "risk_level": level,
+                "traffic_input": traffic_label,
+                "weather_signal": "; ".join(ws["reasons"]),
+                "cargo_type": cargo,
+                "drivers": "; ".join(drivers),
+            }])
 
-        st.markdown("---")
-        st.subheader("Kết quả dự báo")
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("ETA ước tính", eta.strftime("%d/%m/%Y %H:%M"))
-        c2.metric("Thời gian còn trước cut-off", f"{buffer_hours:.1f} giờ")
-        c3.metric("Điểm rủi ro thử nghiệm", f"{score}/100")
-        c4.metric("Mức rủi ro", level)
-
-        if buffer_hours < 0:
-            st.error(
-                "Theo dữ liệu đầu vào, chuyến có nguy cơ đến sau cut-off. "
-                "Cần xác minh ngay với điều độ và đại lý/hãng tàu."
+            st.download_button(
+                "Tải kết quả phân tích CSV",
+                result.to_csv(index=False).encode("utf-8-sig"),
+                file_name="ket_qua_du_bao_cutoff.csv",
+                mime="text/csv",
             )
-        elif score >= 60:
-            st.error(
-                "Rủi ro cao theo bộ quy tắc thử nghiệm. "
-                "Cần xác minh các dữ liệu đầu vào trước khi quyết định."
-            )
-        elif score >= 30:
-            st.warning(
-                "Có yếu tố rủi ro; cần theo dõi ETA và chuẩn bị phương án dự phòng."
-            )
-        else:
-            st.success(
-                "Rủi ro thấp theo thông tin hiện có. "
-                "Tiếp tục theo dõi nếu điều kiện thay đổi."
-            )
-
-        with st.expander("Vì sao hệ thống đánh giá như vậy?", expanded=True):
-            if drivers:
-                for driver in drivers:
-                    st.write("• " + driver)
-            else:
-                st.write("Chưa phát hiện yếu tố rủi ro nổi bật.")
-
-        st.subheader("Phương án đề xuất")
-        for priority, action in build_recommendations(
-            buffer_hours,
-            ws["score"],
-            traffic_value,
-            port_wait,
-            cargo,
-        ):
-            st.write(f"**{priority}:** {action}")
-
-        result = pd.DataFrame([{
-            "thoi_gian_phan_tich": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "cang_dich": port_name,
-            "departure": departure.strftime("%Y-%m-%d %H:%M"),
-            "cutoff": cutoff.strftime("%Y-%m-%d %H:%M"),
-            "eta_uoc_tinh": eta.strftime("%Y-%m-%d %H:%M"),
-            "buffer_hours": round(buffer_hours, 2),
-            "risk_score_prototype": score,
-            "risk_level": level,
-            "traffic_input": traffic[0],
-            "weather_signal": "; ".join(ws["reasons"]),
-            "cargo_type": cargo,
-            "drivers": "; ".join(drivers),
-        }])
-
-        st.download_button(
-            "Tải kết quả phân tích CSV",
-            result.to_csv(index=False).encode("utf-8-sig"),
-            file_name="ket_qua_du_bao_cutoff.csv",
-            mime="text/csv",
-        )
 
 
 # =========================================================
 # TAB 2: DỮ LIỆU LỊCH SỬ
 # =========================================================
+
 with tab2:
-    st.subheader("Tải dữ liệu lịch sử để phân tích")
+
+    st.subheader("📊 Tải dữ liệu lịch sử")
 
     st.write(
-        "Tải file Excel/CSV chuyến hàng lên. Ứng dụng sẽ đọc dữ liệu "
-        "và hiển thị các dòng đầu tiên. Bản hiện tại chưa tự huấn luyện "
-        "mô hình máy học."
+        "Tải file Excel hoặc CSV để kiểm tra dữ liệu chuyến hàng. "
+        "Bản hiện tại chưa tự huấn luyện mô hình máy học."
     )
 
     uploaded = st.file_uploader(
@@ -530,8 +642,16 @@ with tab2:
             st.success(
                 f"Đã đọc {len(df):,} dòng và {len(df.columns)} cột."
             )
-            st.write("**Các cột tìm thấy:**", ", ".join(map(str, df.columns)))
-            st.dataframe(df.head(100), use_container_width=True)
+
+            st.write(
+                "**Các cột tìm thấy:**",
+                ", ".join(map(str, df.columns)),
+            )
+
+            st.dataframe(
+                df.head(100),
+                use_container_width=True,
+            )
 
             st.download_button(
                 "Tải dữ liệu đã đọc lại dạng CSV",
@@ -541,7 +661,7 @@ with tab2:
             )
 
             st.info(
-                "Cần xác định đúng các cột thời gian rời kho, cut-off, "
+                "Cần xác định các cột thời gian rời kho, cut-off, "
                 "thời gian vận chuyển và kết quả đúng hạn/trễ trước khi "
                 "xây dựng mô hình dự báo có kiểm định."
             )
@@ -550,6 +670,7 @@ with tab2:
             st.error(f"Không đọc được tệp: {e}")
 
     st.markdown("#### Mẫu cột tham khảo")
+
     st.code(
         "shipment_id, warehouse_departure, cutoff_time, "
         "planned_travel_hours, traffic_level, weather_level, "
@@ -559,63 +680,80 @@ with tab2:
 
 
 # =========================================================
-# TAB 3: GPS THỦ CÔNG VÀ TUYẾN ĐƯỜNG
+# TAB 3: TỌA ĐỘ VÀ TUYẾN ĐƯỜNG
 # =========================================================
-with tab_gps:
+
+with tab3:
+
     st.subheader("📍 Xác định vị trí và tính tuyến đường")
 
     st.warning(
-        "Phiên bản này không tự lấy GPS từ trình duyệt. "
-        "Mày có thể nhập tọa độ hiện tại của thiết bị hoặc xe để tính tuyến. "
-        "Tọa độ phải được cung cấp với sự đồng ý của người sử dụng thiết bị."
+        "Bản này dùng tọa độ nhập thủ công, không tự lấy GPS của trình duyệt. "
+        "Tọa độ mặc định chỉ là ví dụ, không phải vị trí thực của người dùng."
     )
 
     gps_col, route_col = st.columns(2)
 
     with gps_col:
-        st.markdown("#### 1. Nhập tọa độ điểm xuất phát")
 
-        default_lat = float(st.session_state.get("gps_lat", 10.7769))
-        default_lon = float(st.session_state.get("gps_lon", 106.7009))
+        st.markdown("#### 1. Điểm xuất phát")
 
-        gps_lat = st.number_input(
+        origin_lat_input = st.number_input(
             "Vĩ độ điểm xuất phát",
             min_value=-90.0,
             max_value=90.0,
-            value=default_lat,
+            value=float(st.session_state.get("gps_lat", 10.7769)),
             format="%.6f",
+            key="origin_lat_input",
         )
-        gps_lon = st.number_input(
+
+        origin_lon_input = st.number_input(
             "Kinh độ điểm xuất phát",
             min_value=-180.0,
             max_value=180.0,
-            value=default_lon,
+            value=float(st.session_state.get("gps_lon", 106.7009)),
             format="%.6f",
+            key="origin_lon_input",
         )
 
-        if st.button("Lưu tọa độ xuất phát", use_container_width=True):
-            st.session_state["gps_lat"] = gps_lat
-            st.session_state["gps_lon"] = gps_lon
+        if st.button(
+            "Lưu tọa độ xuất phát",
+            use_container_width=True,
+        ):
+            st.session_state["gps_lat"] = origin_lat_input
+            st.session_state["gps_lon"] = origin_lon_input
+
             st.success("Đã lưu tọa độ xuất phát.")
 
         st.caption(
-            "Có thể lấy tọa độ từ ứng dụng bản đồ trên điện thoại. "
-            "Tọa độ mặc định chỉ là ví dụ, không phải vị trí thực của mày."
+            "Có thể lấy tọa độ từ ứng dụng bản đồ. "
+            "Hãy nhập tọa độ thực tế nếu muốn tính tuyến có ý nghĩa."
         )
 
     with route_col:
+
         st.markdown("#### 2. Tính tuyến đường đến cảng")
 
         st.write(f"**Cảng đích:** {port_name}")
-        st.write(f"**Tọa độ cảng:** {port_lat:.5f}, {port_lon:.5f}")
+        st.write(
+            f"**Tọa độ cảng:** {port_lat:.5f}, {port_lon:.5f}"
+        )
 
         if st.button(
             "Tính tuyến đường đến cảng",
             type="primary",
             use_container_width=True,
         ):
-            origin_lat = st.session_state.get("gps_lat", gps_lat)
-            origin_lon = st.session_state.get("gps_lon", gps_lon)
+
+            origin_lat = st.session_state.get(
+                "gps_lat",
+                origin_lat_input,
+            )
+
+            origin_lon = st.session_state.get(
+                "gps_lon",
+                origin_lon_input,
+            )
 
             try:
                 route_url = (
@@ -632,36 +770,47 @@ with tab_gps:
                     },
                     timeout=25,
                 )
+
                 response.raise_for_status()
                 route_json = response.json()
 
-                if route_json.get("code") != "Ok" or not route_json.get("routes"):
+                if (
+                    route_json.get("code") != "Ok"
+                    or not route_json.get("routes")
+                ):
                     st.error(
                         "Không tìm được tuyến đường. "
                         "Kiểm tra tọa độ hoặc thử lại sau."
                     )
+
                 else:
                     st.session_state["osrm_route"] = route_json["routes"][0]
+
                     st.session_state["osrm_origin"] = [
                         origin_lat,
                         origin_lon,
                     ]
+
                     st.session_state["osrm_destination"] = [
                         port_lat,
                         port_lon,
                     ]
+
                     st.session_state["osrm_port_name"] = port_name
+
+                    st.session_state["osrm_route_error"] = None
 
             except Exception:
                 st.error(
                     "Không kết nối được dịch vụ định tuyến. "
-                    "Thử lại sau hoặc kiểm tra kết nối mạng."
+                    "Kiểm tra mạng hoặc thử lại sau."
                 )
 
     if (
         st.session_state.get("osrm_route")
         and st.session_state.get("osrm_origin")
     ):
+
         route = st.session_state["osrm_route"]
         origin = st.session_state["osrm_origin"]
         destination = st.session_state["osrm_destination"]
@@ -670,13 +819,25 @@ with tab_gps:
         drive_hours = route["duration"] / 3600
 
         r1, r2, r3 = st.columns(3)
-        r1.metric("Khoảng cách tham khảo", f"{distance_km:.1f} km")
-        r2.metric("Thời gian lái xe ước tính", f"{drive_hours:.1f} giờ")
-        r3.metric("Nguồn tuyến đường", "OSRM / OpenStreetMap")
+
+        r1.metric(
+            "Khoảng cách tham khảo",
+            f"{distance_km:.1f} km",
+        )
+
+        r2.metric(
+            "Thời gian lái xe ước tính",
+            f"{drive_hours:.1f} giờ",
+        )
+
+        r3.metric(
+            "Nguồn tuyến đường",
+            "OSRM / OpenStreetMap",
+        )
 
         st.caption(
             "Thời gian OSRM không phải dữ liệu giao thông trực tiếp. "
-            "Chưa bao gồm thời gian nghỉ, chờ cổng, kiểm tra, hạn chế xe tải "
+            "Chưa bao gồm nghỉ ngơi, chờ cổng, kiểm tra, hạn chế xe tải "
             "hoặc điều kiện vận hành thực tế."
         )
 
@@ -690,17 +851,35 @@ with tab_gps:
             origin,
             tooltip="Điểm xuất phát",
             popup="Điểm xuất phát đã nhập",
-            icon=folium.Icon(color="blue", icon="info-sign"),
+            icon=folium.Icon(
+                color="blue",
+                icon="info-sign",
+            ),
         ).add_to(route_map)
 
         folium.Marker(
             destination,
-            tooltip=st.session_state.get("osrm_port_name", port_name),
-            popup=st.session_state.get("osrm_port_name", port_name),
-            icon=folium.Icon(color="red", icon="flag"),
+            tooltip=st.session_state.get(
+                "osrm_port_name",
+                port_name,
+            ),
+            popup=st.session_state.get(
+                "osrm_port_name",
+                port_name,
+            ),
+            icon=folium.Icon(
+                color="red",
+                icon="flag",
+            ),
         ).add_to(route_map)
 
-        coordinates = route.get("geometry", {}).get("coordinates", [])
+        coordinates = route.get(
+            "geometry",
+            {},
+        ).get(
+            "coordinates",
+            [],
+        )
 
         if coordinates:
             folium.PolyLine(
@@ -719,25 +898,49 @@ with tab_gps:
         st.markdown("#### 3. Thời tiết tại điểm xuất phát")
 
         if st.button("Lấy thời tiết tại điểm xuất phát"):
+
             try:
-                live_weather = get_weather(origin[0], origin[1])
-                st.session_state["origin_weather"] = weather_summary(live_weather)
+                live_weather = get_weather(
+                    origin[0],
+                    origin[1],
+                )
+
+                st.session_state["origin_weather"] = weather_summary(
+                    live_weather
+                )
+
                 st.session_state["origin_weather_error"] = None
+
             except Exception:
                 st.session_state["origin_weather_error"] = True
 
         if st.session_state.get("origin_weather"):
+
             live_summary = st.session_state["origin_weather"]
 
             w1, w2, w3, w4 = st.columns(4)
-            w1.metric("Thời tiết", live_summary["description"])
+
+            w1.metric(
+                "Thời tiết",
+                live_summary["description"],
+            )
+
             w2.metric(
                 "Nhiệt độ",
                 f"{live_summary['temperature']} °C"
-                if live_summary["temperature"] is not None else "N/A",
+                if live_summary["temperature"] is not None
+                else "N/A",
             )
-            w3.metric("Mưa", f"{live_summary['rain']:.1f} mm")
-            w4.metric("Gió", f"{live_summary['wind']:.0f} km/h")
+
+            w3.metric(
+                "Mưa",
+                f"{live_summary['rain']:.1f} mm",
+            )
+
+            w4.metric(
+                "Gió",
+                f"{live_summary['wind']:.0f} km/h",
+            )
 
             if live_summary["reasons"]:
                 st.warning(
@@ -746,36 +949,58 @@ with tab_gps:
                 )
 
         elif st.session_state.get("origin_weather_error"):
-            st.info("Chưa lấy được thời tiết tại điểm xuất phát. Thử lại sau.")
+            st.info(
+                "Chưa lấy được thời tiết tại điểm xuất phát. "
+                "Thử lại sau."
+            )
 
 
 # =========================================================
-# TAB 4: PHẠM VI VÀ GIỚI HẠN
+# TAB 4: GIỚI HẠN HỆ THỐNG
 # =========================================================
-with tab3:
+
+with tab4:
+
     st.subheader("Minh bạch về dữ liệu và giới hạn")
 
     st.markdown("""
-- **Thời tiết:** lấy từ Open-Meteo API. Dữ liệu tại tọa độ được chọn,
-  không đại diện toàn bộ tuyến đường.
-- **Tuyến đường:** sử dụng OSRM/OpenStreetMap để tính tuyến tham khảo.
-  Thời gian tuyến đường không phải dữ liệu ùn tắc thời gian thực.
-- **Giao thông:** hiện do người dùng nhập theo thông tin đang có.
-- **GPS:** phiên bản hiện tại sử dụng tọa độ nhập thủ công, không tự theo dõi xe.
-- **Lịch tàu và cut-off:** phải xác minh theo booking hoặc thông báo mới nhất
-  từ hãng tàu/đại lý.
-- **Điểm rủi ro 0–100:** là bộ quy tắc thử nghiệm, không phải xác suất thống kê
-  và chưa phải mô hình máy học đã huấn luyện.
-- **Quyết định vận hành:** các phương án chỉ là gợi ý. Nhân viên cần xác minh
-  với điều độ, cảng, hãng tàu và khách hàng trước khi thực hiện.
+**1. Thời tiết**
+- Lấy dữ liệu qua Open-Meteo API.
+- Dữ liệu tại tọa độ được chọn, không đại diện toàn bộ tuyến đường.
+
+**2. Tuyến đường**
+- Sử dụng OSRM/OpenStreetMap để tính tuyến tham khảo.
+- Thời gian ước tính không phải dữ liệu ùn tắc thời gian thực.
+
+**3. Giao thông**
+- Mức độ giao thông do người dùng nhập.
+- Chưa kết nối nguồn giao thông trực tiếp.
+
+**4. GPS**
+- Phiên bản hiện tại sử dụng tọa độ nhập thủ công.
+- Chưa tự theo dõi vị trí xe container.
+
+**5. Lịch tàu và cut-off**
+- Cần xác minh từ booking hoặc thông báo cập nhật của hãng tàu/đại lý.
+
+**6. Dự báo rủi ro**
+- Điểm 0–100 hiện là bộ quy tắc thử nghiệm.
+- Đây chưa phải xác suất thống kê hoặc mô hình máy học đã huấn luyện.
+- Cần dữ liệu lịch sử có nhãn kết quả và kiểm thử trước khi công bố độ chính xác.
+
+**7. Quyết định vận hành**
+- Các phương án chỉ là gợi ý.
+- Nhân viên cần xác minh với điều độ, cảng, hãng tàu và khách hàng trước khi thực hiện.
 """)
 
     st.markdown(
         "Nguồn thời tiết: https://open-meteo.com/en/docs"
     )
 
+
 st.markdown("---")
+
 st.caption(
-    "Prototype VYLT 2026 • Chỉ dùng để minh họa và thử nghiệm. "
-    "Cần kiểm chứng dữ liệu và quy trình trước khi áp dụng vào vận hành thực tế."
+    "Prototype VYLT 2026 • Dùng cho mục đích thử nghiệm. "
+    "Cần kiểm chứng dữ liệu và quy trình trước khi áp dụng thực tế."
 )
